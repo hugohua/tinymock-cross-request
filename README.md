@@ -1,7 +1,7 @@
+# 基于Yapi项目的 Chrome 调试插件
+
 ### A chrome extension that gives the html page cross-domain request capability.
 ### 一个赋予html页面跨域请求能力的chrome扩展
-
-https://chrome.google.com/webstore/detail/cross-request/cmnlfmgbjmaciiopcgodlhpiklaghbok?hl=en-US
 
 ### Api
 crossRequest( options )

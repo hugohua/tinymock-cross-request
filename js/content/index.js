@@ -1,23 +1,52 @@
 (function (win) {
-    let elementById = document.getElementById('cross-request-sign');
-    // 判断是否启用插件
-    if (!elementById) {
-        return;
-    }
+    // 常量定义
+    const CONNECTION_RETRY_DELAY = 1000;
+    const NOTIFICATION_DISPLAY_TIME = 5000;
+    
+    // 工具函数
+    const createNotification = (message) => {
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #ff4444;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 4px;
+            z-index: 999999;
+        `;
+        notification.textContent = message;
+        document.body.appendChild(notification);
+        setTimeout(() => notification.remove(), NOTIFICATION_DISPLAY_TIME);
+    };
 
-    // 为了防止打开多个YAPI 导致同时发起多个请求，这里给每个DOM分配一个ID。
-    let randomId = Math.random().toString(36).slice(2);
-    elementById.setAttribute("data-nodeId", randomId)
+    const injectJs = (path, callback) => {
+        const script = document.createElement('script');
+        script.src = chrome.runtime.getURL(path);
+        script.onload = function () {
+            this.remove();
+            callback?.();
+        };
+        (document.head || document.documentElement).appendChild(script);
+    };
 
-    // 通信通道
+    // 连接管理
     let connect = null;
     let isConnecting = false;
     
-    function setupConnection() {
-        // 防止重复连接
-        if (isConnecting) {
-            return;
+    const handleConnectionError = (error) => {
+        console.warn('Connection error:', error);
+        if (error.message.includes('Extension context invalidated')) {
+            console.warn('Extension has been reloaded or updated. Please refresh the page.');
+            createNotification('扩展已更新，请刷新页面');
+            return true;
         }
+        return false;
+    };
+
+    const setupConnection = () => {
+        if (isConnecting) return;
         
         try {
             isConnecting = true;
@@ -26,54 +55,37 @@
             connect.onDisconnect.addListener(() => {
                 isConnecting = false;
                 if (chrome.runtime.lastError) {
-                    const error = chrome.runtime.lastError;
-                    console.warn('Connection lost:', error.message);
-                    
-                    // 如果是扩展上下文失效，通知用户刷新页面
-                    if (error.message.includes('Extension context invalidated')) {
-                        console.warn('Extension has been reloaded or updated. Please refresh the page.');
-                        // 可以在这里添加一个视觉提示
-                        const notification = document.createElement('div');
-                        notification.style.cssText = `
-                            position: fixed;
-                            top: 20px;
-                            right: 20px;
-                            background: #ff4444;
-                            color: white;
-                            padding: 10px 20px;
-                            border-radius: 4px;
-                            z-index: 999999;
-                        `;
-                        notification.textContent = '扩展已更新，请刷新页面';
-                        document.body.appendChild(notification);
-                        setTimeout(() => notification.remove(), 5000);
-                        return;
+                    if (!handleConnectionError(chrome.runtime.lastError)) {
+                        setTimeout(setupConnection, CONNECTION_RETRY_DELAY);
                     }
                 }
-                // 只有在非扩展上下文失效的情况下才重连
-                setTimeout(setupConnection, 1000);
             });
         } catch (error) {
             isConnecting = false;
-            console.warn('Failed to setup connection:', error);
-            if (error.message.includes('Extension context invalidated')) {
-                console.warn('Extension has been reloaded or updated. Please refresh the page.');
-                return;
+            if (!handleConnectionError(error)) {
+                setTimeout(setupConnection, CONNECTION_RETRY_DELAY);
             }
-            // 其他错误则尝试重连
-            setTimeout(setupConnection, 1000);
         }
-    }
+    };
+
+    // 初始化
+    const elementById = document.getElementById('cross-request-sign');
+    if (!elementById) return;
+
+    const randomId = Math.random().toString(36).slice(2);
+    elementById.setAttribute("data-nodeId", randomId);
     
     setupConnection();
 
-    // 这里监听
+    // 消息处理
     win.addEventListener('message', (e) => {
-        if (!e || !e.data || (typeof e.data) === 'string' || e.data.source !== 'cross_request_page' || !e.data.nodeId || !e.data.req || e.data.nodeId !== randomId) {
+        if (!e?.data || typeof e.data === 'string' || 
+            e.data.source !== 'cross_request_page' || 
+            !e.data.nodeId || !e.data.req || 
+            e.data.nodeId !== randomId) {
             return;
         }
 
-        // 检查连接状态并尝试重新连接
         if (!connect) {
             setupConnection();
         }
@@ -81,45 +93,24 @@
         try {
             connect.postMessage(e.data);
         } catch (error) {
-            console.warn('Failed to send message:', error);
-            if (error.message.includes('Extension context invalidated')) {
-                console.warn('Extension has been reloaded or updated. Please refresh the page.');
-                return;
+            if (!handleConnectionError(error)) {
+                setupConnection();
             }
-            // 其他错误则尝试重新连接
-            setupConnection();
         }
     });
 
-    connect.onMessage.addListener((msg) => {
-        if (msg.type !== 'fetch_callback') {
-            return;
-        }
-        msg['source'] = "cross_request_content";
-        // 透传给页面Window
-        win.postMessage(msg, location.origin)
+    connect?.onMessage.addListener((msg) => {
+        if (msg.type !== 'fetch_callback') return;
+        msg.source = "cross_request_content";
+        win.postMessage(msg, location.origin);
     });
 
-    // 给Window注入JS
-    function injectJs(path, callback) {
-        let s = document.createElement('script');
-        // 获取Chrome路径
-        s.src = chrome.runtime.getURL(path);
-        s.onload = function () {
-            this.remove();
-            callback && callback();
-        };
-        (document.head || document.documentElement).appendChild(s);
-    }
-
-    // 注入
-    injectJs('/js/inject/index.js', function () {
+    // 注入脚本
+    injectJs('/js/inject/index.js', () => {
         try {
-            if (elementById) {
-                elementById.setAttribute('key', 'yapi');
-            }
+            elementById?.setAttribute('key', 'yapi');
         } catch (e) {
-            console.error(e)
+            console.error('Failed to set attribute:', e);
         }
     });
-})(window)
+})(window);
