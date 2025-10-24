@@ -228,8 +228,12 @@
         async handleRetry(error, req, retryCount) {
             const config = this.configManager.get();
             
+            // 创建一个新的错误对象，避免修改只读的message属性
+            let modifiedError = error;
             if (error.name === 'AbortError') {
-                error.message = `请求超时 (${config.timeout}ms)`;
+                modifiedError = new Error(`请求超时 (${config.timeout}ms)`);
+                modifiedError.name = 'AbortError';
+                modifiedError.stack = error.stack;
             }
 
             if (retryCount < config.maxRetries && 
@@ -240,7 +244,7 @@
                 return this.fetchWithRetry(req, retryCount + 1);
             }
 
-            throw error;
+            throw modifiedError;
         }
 
         async handleResponse(res) {
